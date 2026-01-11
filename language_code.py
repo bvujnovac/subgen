@@ -1,4 +1,6 @@
 from enum import Enum
+from typing import Callable, Optional
+
 
 class LanguageCode(Enum):
     # ISO 639-1, ISO 639-2/T, ISO 639-2/B, English Name, Native Name
@@ -113,86 +115,121 @@ class LanguageCode(Enum):
         self.name_en = name_en
         self.name_native = name_native
 
-    @staticmethod
-    def from_iso_639_1(code):
-        for lang in LanguageCode:
-            if lang.iso_639_1 == code:
-                return lang
-        return LanguageCode.NONE
-
-    @staticmethod
-    def from_iso_639_2(code):
-        for lang in LanguageCode:
-            if lang.iso_639_2_t == code or lang.iso_639_2_b == code:
-                return lang
-        return LanguageCode.NONE
-
-    @staticmethod
-    def from_name(name : str):
-        """Convert a language name (either English or native) to LanguageCode enum."""
-        for lang in LanguageCode:
-            if lang.name_en.lower() == name.lower() or lang.name_native.lower() == name.lower():
-                return lang
-        LanguageCode.NONE
-        
-
-    @staticmethod    
-    def from_string(value: str):
+    @classmethod
+    def _find_by_attribute(
+        cls,
+        value: str,
+        matcher: Callable[["LanguageCode", str], bool],
+    ) -> "LanguageCode":
         """
-        Convert a string to a LanguageCode instance. Matches on ISO codes, English name, or native name.
+        Search for a language by attribute using a custom matcher function.
+
+        Args:
+            value: The value to search for
+            matcher: A callable that takes (lang, value) and returns True if matched
+
+        Returns:
+            The matching LanguageCode or LanguageCode.NONE
         """
         if value is None:
-            return LanguageCode.NONE
-        value = value.strip().lower()
-        for lang in LanguageCode:
-            if lang is LanguageCode.NONE:
+            return cls.NONE
+        for lang in cls:
+            if lang is cls.NONE:
                 continue
-            elif (
-                value == lang.iso_639_1
-                or value == lang.iso_639_2_t
-                or value == lang.iso_639_2_b
-                or value == lang.name_en.lower()
-                or value == lang.name_native.lower()
-            ):
+            if matcher(lang, value):
                 return lang
-        return LanguageCode.NONE
+        return cls.NONE
+
+    @classmethod
+    def from_iso_639_1(cls, code: str) -> "LanguageCode":
+        """Find language by ISO 639-1 code (e.g., 'en', 'fr')."""
+        return cls._find_by_attribute(
+            code,
+            lambda lang, val: lang.iso_639_1 == val,
+        )
+
+    @classmethod
+    def from_iso_639_2(cls, code: str) -> "LanguageCode":
+        """Find language by ISO 639-2 code (T or B variant)."""
+        return cls._find_by_attribute(
+            code,
+            lambda lang, val: lang.iso_639_2_t == val or lang.iso_639_2_b == val,
+        )
+
+    @classmethod
+    def from_name(cls, name: str) -> "LanguageCode":
+        """Find language by English or native name (case-insensitive)."""
+        if name is None:
+            return cls.NONE
+        name_lower = name.lower()
+        return cls._find_by_attribute(
+            name_lower,
+            lambda lang, val: (
+                lang.name_en is not None
+                and (lang.name_en.lower() == val or lang.name_native.lower() == val)
+            ),
+        )
+
+    @classmethod
+    def from_string(cls, value: str) -> "LanguageCode":
+        """
+        Find language by any identifier (ISO codes, English name, or native name).
+
+        This is the most flexible search method, trying all possible matches.
+        """
+        if value is None:
+            return cls.NONE
+        value_lower = value.strip().lower()
+        return cls._find_by_attribute(
+            value_lower,
+            lambda lang, val: (
+                val == lang.iso_639_1
+                or val == lang.iso_639_2_t
+                or val == lang.iso_639_2_b
+                or (lang.name_en is not None and val == lang.name_en.lower())
+                or (lang.name_native is not None and val == lang.name_native.lower())
+            ),
+        )
     
-    # is valid language
-    @staticmethod
-    def is_valid_language(language: str):
-        return LanguageCode.from_string(language) is not LanguageCode.NONE
-    
-    def to_iso_639_1(self):
+    @classmethod
+    def is_valid_language(cls, language: str) -> bool:
+        """Check if the given string represents a valid language."""
+        return cls.from_string(language) is not cls.NONE
+
+    def to_iso_639_1(self) -> Optional[str]:
+        """Return the ISO 639-1 code."""
         return self.iso_639_1
 
-    def to_iso_639_2_t(self):
+    def to_iso_639_2_t(self) -> Optional[str]:
+        """Return the ISO 639-2/T code."""
         return self.iso_639_2_t
 
-    def to_iso_639_2_b(self):
+    def to_iso_639_2_b(self) -> Optional[str]:
+        """Return the ISO 639-2/B code."""
         return self.iso_639_2_b
 
-    def to_name(self, in_english=True):
+    def to_name(self, in_english: bool = True) -> Optional[str]:
+        """Return the language name in English or native form."""
         return self.name_en if in_english else self.name_native
-    def __str__(self):
+
+    def __str__(self) -> str:
         if self.name_en is None:
             return "Unknown"
         return self.name_en
-    
-    def __bool__(self):
-        return True if self.iso_639_1 is not None else False
-    
-    def __eq__(self, other):
+
+    def __bool__(self) -> bool:
+        return self.iso_639_1 is not None
+
+    def __eq__(self, other: object) -> bool:
         """
         Compare the LanguageCode instance to another object.
-        Explicitly handle comparison to None.
+
+        Supports comparison with None, strings, and other LanguageCode instances.
         """
         if other is None:
-            # If compared to None, return False unless self is None
             return self.iso_639_1 is None
-        if isinstance(other, str):  # Allow comparison with a string
+        if isinstance(other, str):
             return self.value == LanguageCode.from_string(other)
         if isinstance(other, LanguageCode):
-            # Normal comparison for LanguageCode instances
             return self.iso_639_1 == other.iso_639_1
-        # Otherwise, defer to the default equality
         return NotImplemented

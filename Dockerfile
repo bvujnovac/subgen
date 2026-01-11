@@ -1,45 +1,39 @@
-# Stage 1: Builder
-FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04 AS builder
+# === Stage 1: Build dependencies and install packages ===
+FROM python:3.12-slim-trixie AS builder
 
-WORKDIR /subgen
+WORKDIR /wsg
 
-ARG DEBIAN_FRONTEND=noninteractive
-
-# Install system dependencies
+# Install required build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
     ffmpeg \
     git \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
+# Copy and install dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY . .
+RUN pip install --no-cache-dir --prefix=/install torch torchaudio --extra-index-url https://download.pytorch.org/whl/cpu
 
-# Stage 2: Runtime
-FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
-WORKDIR /subgen
+# === Stage 2: Create a minimal runtime image ===
+FROM python:3.12-slim-trixie AS runtime
 
-# Copy necessary files from the builder stage
-COPY --from=builder /subgen/launcher.py .
-COPY --from=builder /subgen/subgen.py .
-COPY --from=builder /subgen/language_code.py .
-COPY --from=builder /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
+WORKDIR /wsg
 
-# Install runtime dependencies
+# Install only required runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    python3 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy only necessary files from builder stage
+COPY --from=builder /install /usr/local
+
+# Copy source code
+COPY wsg.py language_code.py /wsg/
+
 ENV PYTHONUNBUFFERED=1
 
-# Set command to run the application
-CMD ["python3", "launcher.py"]
+CMD ["python3", "wsg.py"]

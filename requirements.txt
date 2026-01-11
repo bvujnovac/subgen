@@ -1,10 +1,7 @@
 numpy
 stable-ts
 fastapi
-requests
 faster-whisper
 uvicorn
 python-multipart
 ffmpeg-python
-whisper
-watchdog
