@@ -608,6 +608,8 @@ async def asr(
         args['condition_on_previous_text'] = False
         args['suppress_blank'] = True
         args['vad_parameters'] = dict(min_silence_duration_ms=500)
+        args['initial_prompt'] = ("The following is a high-quality, professionally segmented subtitle transcription. "
+                                  "Use proper punctuation, natural sentence breaks, and avoid filler.")
 
         file_content = audio_file.file.read()
 
