@@ -420,12 +420,12 @@ async def asr(
         args['vad'] = True
         args['vad_threshold'] = 0.25
 
-        #args['vad_filter'] = True
-        #args['vad_parameters'] = {
-        #    'threshold': 0.25,
-        #    'min_silence_duration_ms': 500,
-        #    'speech_pad_ms': 400,
-        #}
+        args['vad_filter'] = True
+        args['vad_parameters'] = {
+            'threshold': 0.2,
+            'min_silence_duration_ms': 500,
+            'speech_pad_ms': 400,
+        }
 
         file_content = audio_file.file.read()
 
