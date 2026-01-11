@@ -275,182 +275,6 @@ def delete_model() -> None:
             logging.debug(f"malloc_trim not available: {e}")
 
 
-def save_upload_to_temp(upload_file: UploadFile, temp_dir: Optional[str] = None) -> str:
-    """
-    Save uploaded file to a temp file without loading entirely into memory.
-
-    Uses shutil.copyfileobj to stream the file to disk.
-
-    Args:
-        upload_file: FastAPI UploadFile object
-        temp_dir: Directory for temp file (default: system temp or TEMP_FILE_PATH)
-
-    Returns:
-        Path to the saved temp file (caller must delete)
-    """
-    suffix = os.path.splitext(upload_file.filename or '')[1] or '.tmp'
-    temp_file = tempfile.NamedTemporaryFile(
-        delete=False,
-        suffix=suffix,
-        dir=temp_dir or config.temp_file_path,
-    )
-    try:
-        upload_file.file.seek(0)
-        shutil.copyfileobj(upload_file.file, temp_file)
-        temp_file.close()
-        logging.debug(f"Saved upload to temp file: {temp_file.name}")
-        return temp_file.name
-    except Exception as e:
-        temp_file.close()
-        os.unlink(temp_file.name)
-        raise e
-
-
-def handle_multiple_audio_tracks(file_path: str, language: LanguageCode | None = None) -> BytesIO | None:
-    """
-    Handles the possibility of a media file having multiple audio tracks.
-    
-    If the media file has multiple audio tracks, it will extract the audio track of the selected language. Otherwise, it will extract the first audio track.
-    
-    Parameters:
-    file_path (str): The path to the media file.
-    language (LanguageCode | None): The language of the audio track to search for. If None, it will extract the first audio track.
-    
-    Returns:
-    io.BytesIO  | None: The audio or None if no audio track was extracted.
-    """
-    audio_bytes = None
-    audio_tracks = get_audio_tracks(file_path)
-
-    if len(audio_tracks) > 1:
-        logging.debug(f"Handling multiple audio tracks from {file_path} and planning to extract audio track of language {language}")
-        logging.debug(
-            "Audio tracks:\n"
-            + "\n".join([f"  - {track['index']}: {track['codec']} {track['language']} {('default' if track['default'] else '')}" for track in audio_tracks])
-        )
-
-        if language is not None:
-            audio_track = get_audio_track_by_language(audio_tracks, language)
-        if audio_track is None:
-            audio_track = audio_tracks[0]
-        
-        audio_bytes = extract_audio_track_to_memory(file_path, audio_track["index"])
-        if audio_bytes is None:
-            logging.error(f"Failed to extract audio track {audio_track['index']} from {file_path}")
-            return None
-    return audio_bytes
-
-
-def get_audio_tracks(video_file):
-    """
-    Extracts information about the audio tracks in a file.
-
-    Returns:
-        List of dictionaries with information about each audio track.
-        Each dictionary has the following keys:
-            index (int): The stream index of the audio track.
-            codec (str): The name of the audio codec.
-            channels (int): The number of audio channels.
-            language (LanguageCode): The language of the audio track.
-            title (str): The title of the audio track.
-            default (bool): Whether the audio track is the default for the file.
-            forced (bool): Whether the audio track is forced.
-            original (bool): Whether the audio track is the original.
-            commentary (bool): Whether the audio track is a commentary.
-
-    Raises:
-        ffmpeg.Error: If FFmpeg fails to probe the file.
-    """
-    try:
-        # Probe the file to get audio stream metadata
-        probe = ffmpeg.probe(video_file, select_streams='a')
-        audio_streams = probe.get('streams', [])
-        
-        # Extract information for each audio track
-        audio_tracks = []
-        for stream in audio_streams:
-            audio_track = {
-                "index": int(stream.get("index", None)),
-                "codec": stream.get("codec_name", "Unknown"),
-                "channels": int(stream.get("channels", None)),
-                "language": LanguageCode.from_iso_639_2(stream.get("tags", {}).get("language", "Unknown")),
-                "title": stream.get("tags", {}).get("title", "None"),
-                "default": stream.get("disposition", {}).get("default", 0) == 1,
-                "forced": stream.get("disposition", {}).get("forced", 0) == 1,
-                "original": stream.get("disposition", {}).get("original", 0) == 1,
-                "commentary": "commentary" in stream.get("tags", {}).get("title", "").lower()
-            }
-            audio_tracks.append(audio_track)    
-        return audio_tracks
-
-    except ffmpeg.Error as e:
-        logging.error(f"FFmpeg error: {e.stderr}")
-        return []
-    except Exception as e:
-        logging.error(f"An error occurred while reading audio track information: {str(e)}")
-        return []
-
-
-def extract_audio_to_temp(
-    input_path: str,
-    temp_dir: Optional[str] = None,
-    start_time: Optional[int] = None,
-    duration: Optional[int] = None,
-) -> str:
-    """
-    Extract audio from video/audio file to a temp WAV file.
-
-    Uses ffmpeg to stream-extract audio without loading video into memory.
-
-    Args:
-        input_path: Path to input video/audio file
-        temp_dir: Directory for temp file (default: system temp or TEMP_FILE_PATH)
-        start_time: Optional start time in seconds
-        duration: Optional duration in seconds
-
-    Returns:
-        Path to the extracted audio WAV file (caller must delete)
-    """
-    temp_audio = tempfile.NamedTemporaryFile(
-        delete=False,
-        suffix='.wav',
-        dir=temp_dir or config.temp_file_path,
-    )
-    temp_audio.close()
-
-    try:
-        input_kwargs = {}
-        if start_time is not None:
-            input_kwargs['ss'] = start_time
-        if duration is not None:
-            input_kwargs['t'] = duration
-
-        stream = ffmpeg.input(input_path, **input_kwargs)
-        stream = stream.output(
-            temp_audio.name,
-            format='wav',
-            acodec='pcm_s16le',
-            ac=1,
-            ar=16000,
-            vn=None,  # Skip video streams entirely
-            threads=1,  # Limit thread usage to reduce memory
-            **{'max_alloc': '104857600'}  # 100MB max buffer allocation
-        )
-        stream.run(overwrite_output=True, capture_stderr=True, quiet=True)
-
-        logging.debug(f"Extracted audio to temp file: {temp_audio.name}")
-        return temp_audio.name
-
-    except ffmpeg.Error as e:
-        os.unlink(temp_audio.name)
-        logging.error(f"FFmpeg error extracting audio: {e.stderr.decode() if e.stderr else str(e)}")
-        raise
-    except Exception as e:
-        os.unlink(temp_audio.name)
-        logging.error(f"Error extracting audio: {str(e)}")
-        raise
-
-
 def extract_audio_segment_to_memory(input_file, start_time, duration):
     """
     Extract a segment of audio from input_file, starting at start_time for duration seconds.
@@ -573,8 +397,6 @@ async def asr(
     Files are streamed to disk to avoid loading large videos into memory.
     """
     result = None
-    temp_upload_path = None
-    temp_audio_path = None
 
     try:
         log_with_context(
@@ -589,33 +411,17 @@ async def asr(
             logging.info(f"Forcing detected language to {config.force_detected_language_to}")
 
         start_time = time.time()
-
-        # Save upload to temp file (streams to disk, doesn't load into RAM)
-        #temp_upload_path = save_upload_to_temp(audio_file)
-        #logging.debug(f"Upload saved to: {temp_upload_path}")
-        #await audio_file.close()
-
         start_model()
 
         args = {'progress_callback': progress}
-        args['batch_size'] = config.batch_size
-        logging.info(f"Processing with batch_size={config.batch_size}")
+        #args['batch_size'] = config.batch_size
+        #logging.info(f"Processing with batch_size={config.batch_size}")
 
         args['vad_filter'] = True
-        args['temperature'] = 0
-        args['beam_size'] = 5
-        args['no_speech_threshold'] = 0.8
-        args['condition_on_previous_text'] = False
-        args['suppress_blank'] = True
-        args['vad_parameters'] = dict(min_silence_duration_ms=500)
-        args['initial_prompt'] = ("The following is a high-quality, professionally segmented subtitle transcription. "
+        args['initial_prompt'] = ("The following is a high-quality, professionally segmented subtitle transcription."
                                   "Use proper punctuation, natural sentence breaks, and avoid filler.")
 
         file_content = audio_file.file.read()
-
-        # Extract audio to temp WAV file (ffmpeg streams from disk)
-        #temp_audio_path = extract_audio_to_temp(temp_upload_path)
-        #args['audio'] = temp_audio_path
 
         if encode:
             args['audio'] = file_content
@@ -665,13 +471,6 @@ async def asr(
 
     finally:
         await audio_file.close()
-        # Clean up temp files
-        if temp_upload_path and os.path.exists(temp_upload_path):
-            os.unlink(temp_upload_path)
-            logging.debug(f"Cleaned up temp upload: {temp_upload_path}")
-        if temp_audio_path and os.path.exists(temp_audio_path):
-            os.unlink(temp_audio_path)
-            logging.debug(f"Cleaned up temp audio: {temp_audio_path}")
         # Clean up any lingering result object
         if result is not None:
             del result
@@ -708,8 +507,6 @@ async def detect_language(
 
     detected_language = LanguageCode.NONE
     language_code = 'und'
-    temp_upload_path = None
-    temp_audio_path = None
 
     try:
         log_with_context(
@@ -719,9 +516,6 @@ async def detect_language(
             context_prefix="for",
         )
 
-        # Save upload to temp file (streams to disk, doesn't load into RAM)
-        temp_upload_path = save_upload_to_temp(audio_file)
-
         start_model()
 
         audio_file.file.seek(0)
@@ -729,14 +523,6 @@ async def detect_language(
         args = {'progress_callback': progress}
         args['batch_size'] = config.batch_size
         logging.info(f"Processing with batch_size={config.batch_size}")
-
-        # Extract only the needed audio segment to temp file
-        #temp_audio_path = extract_audio_to_temp(
-        #    temp_upload_path,
-        #    start_time=lang_offset,
-        #    duration=lang_length,
-        #)
-        #args['audio'] = temp_audio_path
 
         if encode:
             args['audio'] = extract_audio_segment_to_memory(audio_file, lang_offset, lang_length).read()
@@ -764,11 +550,6 @@ async def detect_language(
 
     finally:
         await audio_file.close()
-        # Clean up temp files
-        if temp_upload_path and os.path.exists(temp_upload_path):
-            os.unlink(temp_upload_path)
-        if temp_audio_path and os.path.exists(temp_audio_path):
-            os.unlink(temp_audio_path)
         delete_model()
 
     return {"detected_language": detected_language.to_name(), "language_code": language_code}
