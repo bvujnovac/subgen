@@ -418,14 +418,15 @@ async def asr(
         args['verbose'] = False
         args['initial_prompt'] = "Hello, welcome to my lecture."
         args['vad'] = True
-        args['vad_threshold'] = 0.25
+        args['vad_threshold'] = 0.35
+        args['min_silence_dur'] = 0.1
 
-        args['vad_filter'] = True
-        args['vad_parameters'] = {
-            'threshold': 0.2,
-            'min_silence_duration_ms': 500,
-            'speech_pad_ms': 400,
-        }
+        # args['vad_filter'] = True
+        # args['vad_parameters'] = {
+        #     'threshold': 0.2,
+        #     'min_silence_duration_ms': 500,
+        #     'speech_pad_ms': 400,
+        # }
 
         file_content = audio_file.file.read()
 
