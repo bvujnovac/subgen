@@ -10,25 +10,27 @@ services:
     # Use pre-built image from GHCR:
     image: ghcr.io/bvujnovac/subgen:latest
     environment:
-      - WHISPER_MODEL=medium
-      - WHISPER_THREADS=4
-      - TRANSCRIBE_DEVICE=cuda
-      - COMPUTE_TYPE=auto
+      - WHISPER_MODEL=small
+      #- WHISPER_THREADS=4
+      - CONCURRENT_TRANSCRIPTIONS=1
+      - BATCH_SIZE=1
+      - TRANSCRIBE_DEVICE=cpu
+      - COMPUTE_TYPE=int8
       - WEBHOOK_PORT=9000
       - DEBUG=false
       - CLEAR_VRAM_ON_COMPLETE=true
       - WORD_LEVEL_HIGHLIGHT=false
       - APPEND=false
-      - MODEL_PATH=/models
+      - MODEL_PATH=./models
       # Optional: Custom temp file location for large uploads
-      # - TEMP_FILE_PATH=/tmp/subgen
+      - TEMP_FILE_PATH=./tmp
       # Optional: Force detected language
-      # - FORCE_DETECTED_LANGUAGE_TO=en
+      - FORCE_DETECTED_LANGUAGE_TO=en
       # Optional: Language detection settings
-      # - DETECT_LANGUAGE_LENGTH=30
-      # - DETECT_LANGUAGE_OFFSET=0
+      - DETECT_LANGUAGE_LENGTH=600
+      - DETECT_LANGUAGE_OFFSET=120
       # Optional: Custom segment grouping
-      # - CUSTOM_REGROUP=cm_sl=84_sl=42++++++1
+      - CUSTOM_REGROUP=cm_sl=84_sl=42++++++1
     volumes:
       - ./models:/models
     ports:

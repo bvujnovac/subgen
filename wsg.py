@@ -100,8 +100,8 @@ class Config:
             word_level_highlight=convert_to_bool(os.getenv('WORD_LEVEL_HIGHLIGHT', False)),
             model_location=os.getenv('MODEL_PATH', './models'),
             custom_regroup=os.getenv('CUSTOM_REGROUP', 'cm_sl=84_sl=42++++++1'),
-            detect_language_length=int(os.getenv('DETECT_LANGUAGE_LENGTH', 30)),
-            detect_language_offset=int(os.getenv('DETECT_LANGUAGE_OFFSET', 0)),
+            detect_language_length=int(os.getenv('DETECT_LANGUAGE_LENGTH', 600)),
+            detect_language_offset=int(os.getenv('DETECT_LANGUAGE_OFFSET', 120)),
             force_detected_language_to=LanguageCode.from_string(os.getenv('FORCE_DETECTED_LANGUAGE_TO', '')),
             kwargs=kwargs,
             temp_file_path=temp_path,
@@ -451,6 +451,91 @@ def extract_audio_to_temp(
         raise
 
 
+def extract_audio_segment_to_memory(input_file, start_time, duration):
+    """
+    Extract a segment of audio from input_file, starting at start_time for duration seconds.
+    
+    :param input_file: UploadFile object or path to the input audio file
+    :param start_time: Start time in seconds (e.g., 60 for 1 minute)
+    :param duration: Duration in seconds (e.g., 30 for 30 seconds)
+    :return: BytesIO object containing the audio segment
+    """
+    try:
+        if hasattr(input_file, 'file') and hasattr(input_file.file, 'read'):  # Handling UploadFile
+            input_file.file.seek(0)  # Ensure the file pointer is at the beginning
+            input_stream = 'pipe:0'
+            input_kwargs = {'input': input_file.file.read()}
+        elif isinstance(input_file, str):  # Handling local file path
+            input_stream = input_file
+            input_kwargs = {}
+        else:
+            raise ValueError("Invalid input: input_file must be a file path or an UploadFile object.")
+
+        logging.info(f"Extracting audio from: {input_stream}, start_time: {start_time}, duration: {duration}")
+
+        # Run FFmpeg to extract the desired segment
+        out, _ = (
+            ffmpeg
+            .input(input_stream, ss=start_time, t=duration)  # Set start time and duration
+            .output('pipe:1', format='wav', acodec='pcm_s16le', ar=16000)  # Output to pipe as WAV
+            .run(capture_stdout=True, capture_stderr=True, **input_kwargs)
+        )
+
+        # Check if the output is empty or null
+        if not out:
+            raise ValueError("FFmpeg output is empty, possibly due to invalid input.")
+        
+        return io.BytesIO(out)  # Convert output to BytesIO for in-memory processing
+
+    except ffmpeg.Error as e:
+        logging.error(f"FFmpeg error: {e.stderr.decode()}")
+        return None
+    except Exception as e:
+        logging.error(f"Error: {str(e)}")
+        return None
+
+    except ffmpeg.Error as e:
+        logging.error(f"FFmpeg error: {e.stderr.decode()}")
+        return None
+    except Exception as e:
+        logging.error(f"Error: {str(e)}")
+        return None
+
+
+async def get_audio_chunk(audio_file, offset=config.detect_language_offset, length=config.detect_language_length, sample_rate=16000, audio_format=np.int16):
+    """
+    Extract a chunk of audio from a file, starting at the given offset and of the given length.
+    
+    :param audio_file: The audio file (UploadFile or file-like object).
+    :param offset: The offset in seconds to start the extraction.
+    :param length: The length in seconds for the chunk to be extracted.
+    :param sample_rate: The sample rate of the audio (default 16000).
+    :param audio_format: The audio format to interpret (default int16, 2 bytes per sample).
+    
+    :return: A numpy array containing the extracted audio chunk.
+    """
+    
+    # Number of bytes per sample (for int16, 2 bytes per sample)
+    bytes_per_sample = np.dtype(audio_format).itemsize
+    
+    # Calculate the start byte based on offset and sample rate
+    start_byte = offset * sample_rate * bytes_per_sample
+    
+    # Calculate the length in bytes based on the length in seconds
+    length_in_bytes = length * sample_rate * bytes_per_sample
+    
+    # Seek to the start position (this assumes the audio_file is a file-like object)
+    await audio_file.seek(start_byte)
+    
+    # Read the required chunk of audio (length_in_bytes)
+    chunk = await audio_file.read(length_in_bytes)
+    
+    # Convert the chunk into a numpy array (normalized to float32)
+    audio_data = np.frombuffer(chunk, dtype=audio_format).flatten().astype(np.float32) / 32768.0
+    
+    return audio_data
+
+
 @app.get("/asr")
 @app.get("/detect-language")
 def handle_get_request(request: Request) -> dict[str, str]:
@@ -506,9 +591,9 @@ async def asr(
         start_time = time.time()
 
         # Save upload to temp file (streams to disk, doesn't load into RAM)
-        temp_upload_path = save_upload_to_temp(audio_file)
-        logging.debug(f"Upload saved to: {temp_upload_path}")
-        await audio_file.close()
+        #temp_upload_path = save_upload_to_temp(audio_file)
+        #logging.debug(f"Upload saved to: {temp_upload_path}")
+        #await audio_file.close()
 
         start_model()
 
@@ -516,9 +601,17 @@ async def asr(
         args['batch_size'] = config.batch_size
         logging.info(f"Processing with batch_size={config.batch_size}")
 
+        file_content = audio_file.file.read()
+
         # Extract audio to temp WAV file (ffmpeg streams from disk)
-        temp_audio_path = extract_audio_to_temp(temp_upload_path)
-        args['audio'] = temp_audio_path
+        #temp_audio_path = extract_audio_to_temp(temp_upload_path)
+        #args['audio'] = temp_audio_path
+
+        if encode:
+            args['audio'] = file_content
+        else:
+            args['audio'] = np.frombuffer(file_content, np.int16).flatten().astype(np.float32) / 32768.0
+            args['input_sr'] = 16000
 
         if config.custom_regroup:
             args['regroup'] = config.custom_regroup
@@ -621,17 +714,27 @@ async def detect_language(
 
         start_model()
 
+        audio_file.file.seek(0)
+
         args = {'progress_callback': progress}
         args['batch_size'] = config.batch_size
         logging.info(f"Processing with batch_size={config.batch_size}")
 
         # Extract only the needed audio segment to temp file
-        temp_audio_path = extract_audio_to_temp(
-            temp_upload_path,
-            start_time=lang_offset,
-            duration=lang_length,
-        )
-        args['audio'] = temp_audio_path
+        #temp_audio_path = extract_audio_to_temp(
+        #    temp_upload_path,
+        #    start_time=lang_offset,
+        #    duration=lang_length,
+        #)
+        #args['audio'] = temp_audio_path
+
+        if encode:
+            args['audio'] = extract_audio_segment_to_memory(audio_file, lang_offset, lang_length).read()
+            args['input_sr'] = 16000
+        else:
+            #args['audio'] = whisper.pad_or_trim(np.frombuffer(audio_file.file.read(), np.int16).flatten().astype(np.float32) / 32768.0, args['input_sr'] * int(detect_language_length))
+            args['audio'] = await get_audio_chunk(audio_file, lang_offset, lang_length)
+            args['input_sr'] = 16000
 
         args.update(config.kwargs)
         # Get language from transcription result without storing full result
