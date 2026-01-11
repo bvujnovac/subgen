@@ -601,6 +601,14 @@ async def asr(
         args['batch_size'] = config.batch_size
         logging.info(f"Processing with batch_size={config.batch_size}")
 
+        args['vad_filter'] = True
+        args['temperature'] = 0
+        args['beam_size'] = 5
+        args['no_speech_threshold'] = 0.8
+        args['condition_on_previous_text'] = False
+        args['suppress_blank'] = True
+        args['vad_parameters'] = dict(min_silence_duration_ms=500)
+
         file_content = audio_file.file.read()
 
         # Extract audio to temp WAV file (ffmpeg streams from disk)
@@ -732,7 +740,6 @@ async def detect_language(
             args['audio'] = extract_audio_segment_to_memory(audio_file, lang_offset, lang_length).read()
             args['input_sr'] = 16000
         else:
-            #args['audio'] = whisper.pad_or_trim(np.frombuffer(audio_file.file.read(), np.int16).flatten().astype(np.float32) / 32768.0, args['input_sr'] * int(detect_language_length))
             args['audio'] = await get_audio_chunk(audio_file, lang_offset, lang_length)
             args['input_sr'] = 16000
 
