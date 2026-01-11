@@ -414,12 +414,18 @@ async def asr(
         start_model()
 
         args = {'progress_callback': progress}
-        #args['batch_size'] = config.batch_size
-        #logging.info(f"Processing with batch_size={config.batch_size}")
+
+        args['verbose'] = False
+        args['initial_prompt'] = "Hello, welcome to my lecture."
+        #args['vad'] = True
+        #args['vad_threshold'] = 0.25
 
         args['vad_filter'] = True
-        args['initial_prompt'] = ("The following is a high-quality, professionally segmented subtitle transcription."
-                                  "Use proper punctuation, natural sentence breaks, and avoid filler.")
+        args['vad_parameters'] = {
+            'threshold': 0.1,
+            'min_silence_duration_ms': 500,
+            'speech_pad_ms': 400,
+        } 
 
         file_content = audio_file.file.read()
 
@@ -521,8 +527,13 @@ async def detect_language(
         audio_file.file.seek(0)
 
         args = {'progress_callback': progress}
-        args['batch_size'] = config.batch_size
-        logging.info(f"Processing with batch_size={config.batch_size}")
+        
+        args['vad_filter'] = True
+        args['vad_parameters'] = {
+            'threshold': 0.1,
+            'min_silence_duration_ms': 500,
+            'speech_pad_ms': 400,
+        } 
 
         if encode:
             args['audio'] = extract_audio_segment_to_memory(audio_file, lang_offset, lang_length).read()
@@ -544,7 +555,7 @@ async def detect_language(
         log_with_context(
             logging.ERROR,
             f"Error detecting language: {e}",
-            video_file,
+            video_file, 
             context_prefix="for",
         )
 
