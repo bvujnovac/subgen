@@ -438,12 +438,15 @@ async def asr(
         args['verbose'] = False
         args['batch_size'] = config.batch_size
         #args['initial_prompt'] = "Hello, welcome to my lecture."
-        args['vad'] = True
+        args['vad'] = False
         args['vad_threshold'] = 0.35
         args['min_silence_dur'] = 0.1
         args['word_timestamps'] = True
         args['vad_filter'] = False
         args['no_speech_threshold'] = 0.4
+        args['beam_size'] = 5
+        args['best_of'] = 5
+        args['condition_on_previous_text'] = True
 
         file_content = audio_file.file.read()
 
@@ -476,8 +479,8 @@ async def asr(
         args['audio'] = audio_array
         args['input_sr'] = 16000
 
-        #if config.custom_regroup:
-        #    args['regroup'] = config.custom_regroup
+        if config.custom_regroup:
+            args['regroup'] = config.custom_regroup
 
         args.update(config.kwargs)
 
