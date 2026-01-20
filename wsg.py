@@ -10,6 +10,7 @@ import ast
 import gc
 import io
 import logging
+import math
 import os
 import random
 import shutil
@@ -90,7 +91,7 @@ class Config:
             whisper_model=os.getenv('WHISPER_MODEL', 'small'),
             whisper_threads = int(os.getenv("WHISPER_THREADS", max(1, os.cpu_count() / 2))),
             concurrent_transcriptions = int(os.getenv('CONCURRENT_TRANSCRIPTIONS', 1)),
-            batch_size = int(os.getenv('BATCH_SIZE', 1)),
+            batch_size = int(os.getenv('BATCH_SIZE', 10)),
             transcribe_device=device,
             compute_type=os.getenv('COMPUTE_TYPE', 'auto'),
             debug=convert_to_bool(os.getenv('DEBUG', False)),
@@ -218,7 +219,6 @@ def append_line(result) -> None:
     )
     result.segments.append(new_segment)
 
-
 def start_model() -> None:
     """Load the Whisper model into memory."""
     global model
@@ -238,7 +238,7 @@ def start_model() -> None:
 
 def delete_model() -> None:
     """Unload the Whisper model from memory if configured."""
-    global model
+    global model 
     if not config.clear_vram_on_complete:
         return
 
@@ -324,6 +324,26 @@ def extract_audio_segment_to_memory(input_file, start_time, duration):
     except Exception as e:
         logging.error(f"Error: {str(e)}")
         return None
+
+
+def generate_clip_timestamps(duration: float, interval: float = 30.0) -> list[dict]:
+    """
+    Generate clip timestamps for batch processing.
+
+    Args:
+        duration: Total audio duration in seconds
+        interval: Clip interval in seconds (default 30)
+
+    Returns:
+        List of dicts with start/end times, e.g., [{'start': 0, 'end': 30}, ...]
+    """
+    clips = []
+    num_chunks = math.ceil(duration / interval)
+    for i in range(num_chunks):
+        start = i * interval
+        end = min(start + interval, duration)
+        clips.append({'start': start, 'end': end})
+    return clips
 
 
 async def get_audio_chunk(audio_file, offset=config.detect_language_offset, length=config.detect_language_length, sample_rate=16000, audio_format=np.int16):
@@ -416,28 +436,48 @@ async def asr(
         args = {'progress_callback': progress}
 
         args['verbose'] = False
-        args['initial_prompt'] = "Hello, welcome to my lecture."
+        args['batch_size'] = config.batch_size
+        #args['initial_prompt'] = "Hello, welcome to my lecture."
         args['vad'] = True
         args['vad_threshold'] = 0.35
         args['min_silence_dur'] = 0.1
-
-        # args['vad_filter'] = True
-        # args['vad_parameters'] = {
-        #     'threshold': 0.2,
-        #     'min_silence_duration_ms': 500,
-        #     'speech_pad_ms': 400,
-        # }
+        args['word_timestamps'] = True
+        args['vad_filter'] = False
+        args['no_speech_threshold'] = 0.4
 
         file_content = audio_file.file.read()
 
+        # Decode audio to numpy via ffmpeg pipe to get duration (no disk write)
         if encode:
-            args['audio'] = file_content
+            logging.info("Decoding audio via ffmpeg pipe")
+            out, _ = (
+                ffmpeg
+                .input('pipe:0')
+                .output('pipe:1', format='wav', acodec='pcm_s16le', ar=16000)
+                .run(input=file_content, capture_stdout=True, capture_stderr=True)
+            )
+            audio_array = np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0
         else:
-            args['audio'] = np.frombuffer(file_content, np.int16).flatten().astype(np.float32) / 32768.0
-            args['input_sr'] = 16000
+            logging.info("Using pre-decoded numpy audio")
+            audio_array = np.frombuffer(file_content, np.int16).flatten().astype(np.float32) / 32768.0
 
-        if config.custom_regroup:
-            args['regroup'] = config.custom_regroup
+        # Free intermediate memory before transcription
+        del file_content
+        if encode:
+            del out
+        gc.collect()
+
+        # Calculate duration and generate 30-second clip timestamps
+        duration = len(audio_array) / 16000
+        timestamp_clips = generate_clip_timestamps(duration, interval=30.0)
+        logging.debug(f"Generated {len(timestamp_clips)} clips for {duration:.1f}s audio")
+
+        args['clip_timestamps'] = timestamp_clips
+        args['audio'] = audio_array
+        args['input_sr'] = 16000
+
+        #if config.custom_regroup:
+        #    args['regroup'] = config.custom_regroup
 
         args.update(config.kwargs)
 
