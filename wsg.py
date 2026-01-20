@@ -100,7 +100,7 @@ class Config:
             clear_vram_on_complete=convert_to_bool(os.getenv('CLEAR_VRAM_ON_COMPLETE', True)),
             word_level_highlight=convert_to_bool(os.getenv('WORD_LEVEL_HIGHLIGHT', False)),
             model_location=os.getenv('MODEL_PATH', './models'),
-            custom_regroup=os.getenv('CUSTOM_REGROUP', 'cm_sl=84_sl=42++++++1'),
+            custom_regroup=os.getenv('CUSTOM_REGROUP', True),
             detect_language_length=int(os.getenv('DETECT_LANGUAGE_LENGTH', 600)),
             detect_language_offset=int(os.getenv('DETECT_LANGUAGE_OFFSET', 120)),
             force_detected_language_to=LanguageCode.from_string(os.getenv('FORCE_DETECTED_LANGUAGE_TO', '')),
