@@ -443,7 +443,7 @@ async def asr(
         args['min_silence_dur'] = 0.1
         args['word_timestamps'] = True
         args['vad_filter'] = False
-        args['no_speech_threshold'] = 0.4
+        args['no_speech_threshold'] = 0.6
         args['beam_size'] = 5
         args['best_of'] = 5
         args['condition_on_previous_text'] = True
