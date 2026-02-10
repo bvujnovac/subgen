@@ -5,3 +5,4 @@ faster-whisper
 uvicorn
 python-multipart
 ffmpeg-python
+python-magic

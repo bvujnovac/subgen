@@ -10,6 +10,7 @@ import ast
 import gc
 import io
 import logging
+import magic
 import math
 import os
 import random
@@ -47,6 +48,78 @@ def convert_to_bool(in_bool) -> bool:
         True if the value represents a truthy string, False otherwise.
     """
     return str(in_bool).lower() in ('true', 'on', '1', 'y', 'yes')
+
+
+# MIME type to FFmpeg format mapping for content-based video detection
+MIME_TO_FFMPEG_FORMAT = {
+    'video/x-matroska': 'matroska',
+    'video/webm': 'webm',
+    'video/mp4': 'mp4',
+    'video/quicktime': 'mov',
+    'video/x-msvideo': 'avi',
+    'video/x-flv': 'flv',
+    'video/mpeg': 'mpeg',
+}
+
+
+def detect_format_from_content(file_obj) -> str | None:
+    """
+    Detect FFmpeg format from file content using libmagic.
+
+    Args:
+        file_obj: File-like object to detect format from.
+
+    Returns:
+        FFmpeg format string if video detected, None otherwise.
+    """
+    file_obj.seek(0)
+    header = file_obj.read(2048)
+    file_obj.seek(0)
+
+    mime = magic.from_buffer(header, mime=True)
+    return MIME_TO_FFMPEG_FORMAT.get(mime)
+
+
+def extract_audio_to_temp(
+    input_path: str,
+    input_format: str | None = None,
+    start_time: float | None = None,
+    duration: float | None = None,
+) -> str:
+    """
+    Extract audio from input file to a temporary WAV file.
+
+    Args:
+        input_path: Path to input video/audio file.
+        input_format: FFmpeg format string (e.g., 'matroska'). If provided,
+                      FFmpeg uses this instead of relying on file extension.
+        start_time: Optional start time in seconds.
+        duration: Optional duration in seconds.
+
+    Returns:
+        Path to temporary WAV file. Caller is responsible for cleanup.
+
+    Raises:
+        ffmpeg.Error: If FFmpeg fails to extract audio.
+    """
+    temp_audio = tempfile.NamedTemporaryFile(
+        delete=False, suffix='.wav', dir=config.temp_file_path
+    )
+    temp_audio.close()
+
+    input_kwargs = {}
+    if input_format:
+        input_kwargs['f'] = input_format
+    if start_time is not None:
+        input_kwargs['ss'] = start_time
+    if duration is not None:
+        input_kwargs['t'] = duration
+
+    ffmpeg.input(input_path, **input_kwargs).output(
+        temp_audio.name, format='wav', acodec='pcm_s16le', ac=1, ar=16000, vn=None
+    ).run(overwrite_output=True, capture_stderr=True, quiet=True)
+
+    return temp_audio.name
 
 
 @dataclass
@@ -417,11 +490,18 @@ async def asr(
     Files are streamed to disk to avoid loading large videos into memory.
     """
     result = None
+    temp_upload_path = None
+    temp_audio_path = None
 
     try:
+        # Detect if input is a video file using content-based detection
+        detected_format = detect_format_from_content(audio_file.file)
+        is_video = detected_format is not None
+        file_type = "video" if is_video else "audio"
+
         log_with_context(
             logging.INFO,
-            f"{task.capitalize()} from Bazarr/ASR webhook",
+            f"{task.capitalize()} {file_type} from Bazarr/ASR webhook",
             video_file,
             context_prefix="of file",
         )
@@ -437,7 +517,6 @@ async def asr(
 
         args['verbose'] = False
         args['batch_size'] = config.batch_size
-        #args['initial_prompt'] = "Hello, welcome to my lecture."
         args['vad'] = False
         args['vad_threshold'] = 0.35
         args['min_silence_dur'] = 0.1
@@ -448,26 +527,65 @@ async def asr(
         args['best_of'] = 5
         args['condition_on_previous_text'] = True
 
-        file_content = audio_file.file.read()
+        if is_video:
+            # VIDEO: File-based extraction (avoids loading video into RAM)
+            logging.info("Using file-based extraction for video")
 
-        # Decode audio to numpy via ffmpeg pipe to get duration (no disk write)
-        if encode:
-            logging.info("Decoding audio via ffmpeg pipe")
-            out, _ = (
-                ffmpeg
-                .input('pipe:0')
-                .output('pipe:1', format='wav', acodec='pcm_s16le', ar=16000)
-                .run(input=file_content, capture_stdout=True, capture_stderr=True)
+            # Save upload to temp file (no extension needed - we have the format)
+            with tempfile.NamedTemporaryFile(
+                delete=False, dir=config.temp_file_path
+            ) as tmp:
+                temp_upload_path = tmp.name
+                audio_file.file.seek(0)
+                shutil.copyfileobj(audio_file.file, tmp)
+
+            # Extract audio with explicit format (no extension required)
+            temp_audio_path = extract_audio_to_temp(
+                temp_upload_path, input_format=detected_format
             )
-            audio_array = np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0
-        else:
-            logging.info("Using pre-decoded numpy audio")
-            audio_array = np.frombuffer(file_content, np.int16).flatten().astype(np.float32) / 32768.0
 
-        # Free intermediate memory before transcription
-        del file_content
-        if encode:
-            del out
+            # Delete video temp immediately (free disk space)
+            os.unlink(temp_upload_path)
+            temp_upload_path = None
+
+            # Read WAV into numpy array (WAV is much smaller than video)
+            with open(temp_audio_path, 'rb') as f:
+                wav_data = f.read()
+            # Skip 44-byte WAV header
+            audio_array = (
+                np.frombuffer(wav_data[44:], np.int16)
+                .flatten()
+                .astype(np.float32) / 32768.0
+            )
+            del wav_data
+        else:
+            # AUDIO: Keep existing in-memory approach
+            file_content = audio_file.file.read()
+
+            if encode:
+                logging.info("Decoding audio via ffmpeg pipe")
+                out, _ = (
+                    ffmpeg
+                    .input('pipe:0')
+                    .output('pipe:1', format='wav', acodec='pcm_s16le', ar=16000)
+                    .run(input=file_content, capture_stdout=True, capture_stderr=True)
+                )
+                audio_array = (
+                    np.frombuffer(out, np.int16)
+                    .flatten()
+                    .astype(np.float32) / 32768.0
+                )
+                del out
+            else:
+                logging.info("Using pre-decoded numpy audio")
+                audio_array = (
+                    np.frombuffer(file_content, np.int16)
+                    .flatten()
+                    .astype(np.float32) / 32768.0
+                )
+
+            del file_content
+
         gc.collect()
 
         # Calculate duration and generate 30-second clip timestamps
@@ -521,6 +639,11 @@ async def asr(
 
     finally:
         await audio_file.close()
+        # Clean up temp files
+        if temp_upload_path and os.path.exists(temp_upload_path):
+            os.unlink(temp_upload_path)
+        if temp_audio_path and os.path.exists(temp_audio_path):
+            os.unlink(temp_audio_path)
         # Clean up any lingering result object
         if result is not None:
             del result
