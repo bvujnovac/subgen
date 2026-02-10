@@ -26,6 +26,7 @@ WORKDIR /wsg
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
+    libmagic1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy only necessary files from builder stage
